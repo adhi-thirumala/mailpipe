@@ -1,0 +1,23 @@
+From: sender@example.com
+To: mailpipe@yourdomain.com
+Subject: Test email with attachment
+Date: Sat, 01 Jan 2025 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset="utf-8"
+
+Hey, here's the file you asked for.
+
+On Fri, 31 Dec 2024 at 10:00, Someone <someone@example.com> wrote:
+Can you send me the report?
+
+--boundary123
+Content-Type: text/plain; charset="utf-8"; name="report.txt"
+Content-Disposition: attachment; filename="report.txt"
+Content-Transfer-Encoding: base64
+
+VGhpcyBpcyBhIHRlc3QgcmVwb3J0Lg==
+
+--boundary123--

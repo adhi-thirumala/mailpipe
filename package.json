@@ -1,0 +1,20 @@
+{
+  "name": "mailpipe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "register": "./scripts/register-commands.sh"
+  },
+  "dependencies": {
+    "discord-interactions": "^4.1.0",
+    "email-reply-parser": "^2.3.5",
+    "postal-mime": "^2.4.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "typescript": "^5.7.2",
+    "wrangler": "4"
+  }
+}
