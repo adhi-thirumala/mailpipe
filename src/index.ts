@@ -6,9 +6,16 @@ import PostalMime from "postal-mime";
 import { sendToDiscord, type EmailPayload, type EmailAttachment } from "./discord.js";
 import { handleInteraction } from "./interactions.js";
 import type { Env } from "./types.js";
+import { log } from "./logger.js";
 
 export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
+    log("info", "email received", {
+      from: message.from,
+      to: message.to,
+      size: message.rawSize,
+    });
+
     const rawBytes = await new Response(message.raw).arrayBuffer();
     const parsed = await PostalMime.parse(rawBytes);
 
@@ -16,7 +23,11 @@ export default {
     const forwardingRaw = await env.EMAIL_KV.get("forwarding_list");
     if (forwardingRaw) {
       const addresses: string[] = JSON.parse(forwardingRaw);
-      await Promise.allSettled(addresses.map((addr) => message.forward(addr)));
+      const results = await Promise.allSettled(addresses.map((addr) => message.forward(addr)));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      log("info", "email forwarded", { targets: addresses.length, failed });
+    } else {
+      log("info", "email forwarding skipped", { reason: "no forwarding_list" });
     }
 
     // Build payload for Discord
@@ -36,9 +47,19 @@ export default {
       attachments,
     };
 
+    log("info", "email parsed", {
+      subject: payload.subject,
+      attachments: attachments.length,
+    });
+
     // Send to all registered Discord channels
     const list = await env.EMAIL_KV.list({ prefix: "guild:" });
-    if (list.keys.length === 0) return;
+    if (list.keys.length === 0) {
+      log("info", "discord notify skipped", { reason: "no guilds" });
+      return;
+    }
+
+    log("info", "discord notify start", { guilds: list.keys.length });
 
     const sends = list.keys.map(async (key) => {
       const raw = await env.EMAIL_KV.get(key.name);
@@ -47,13 +68,19 @@ export default {
       return sendToDiscord(channel_id, env.DISCORD_BOT_TOKEN, payload);
     });
 
-    ctx.waitUntil(Promise.allSettled(sends));
+    ctx.waitUntil(
+      Promise.allSettled(sends).then((results) => {
+        const failed = results.filter((r) => r.status === "rejected").length;
+        log("info", "discord notify complete", { total: results.length, failed });
+      }),
+    );
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === "POST") {
       return handleInteraction(request, env);
     }
+    log("info", "health check", { method: request.method, url: request.url });
     return new Response("mailpipe is running", { status: 200 });
   },
 };

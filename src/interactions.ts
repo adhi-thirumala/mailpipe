@@ -10,6 +10,7 @@ import {
 } from "discord-interactions";
 
 import type { Env } from "./types.js";
+import { log } from "./logger.js";
 
 // Permission bit for MANAGE_GUILD
 const MANAGE_GUILD = 1 << 5;
@@ -31,13 +32,16 @@ export async function handleInteraction(request: Request, env: Env): Promise<Res
 
   const isValid = await verifyKey(rawBody, signature, timestamp, env.DISCORD_PUBLIC_KEY);
   if (!isValid) {
+    log("warn", "discord invalid signature");
     return new Response("Invalid request signature", { status: 401 });
   }
 
   const interaction = JSON.parse(rawBody);
+  log("info", "discord interaction", { type: interaction.type });
 
   // PING handshake
   if (interaction.type === InteractionType.PING) {
+    log("info", "discord ping");
     return jsonResponse({ type: InteractionResponseType.PONG });
   }
 
@@ -70,11 +74,14 @@ async function handleCommand(interaction: any, env: Env): Promise<Response> {
   const channelId: string | undefined = interaction.channel_id;
   const memberPermissions: string | undefined = interaction.member?.permissions;
 
+  log("info", "discord command", { name, guildId, channelId });
+
   if (!guildId || !channelId) {
     return ephemeral("This command can only be used in a server.");
   }
 
   if (!hasManageGuild(memberPermissions)) {
+    log("warn", "discord command denied", { name, guildId, channelId });
     return ephemeral("You need the Manage Server permission to use this.");
   }
 

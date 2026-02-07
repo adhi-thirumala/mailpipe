@@ -2,6 +2,8 @@
  * Sends messages to Discord channels via the Bot REST API.
  */
 
+import { log } from "./logger.js";
+
 const DISCORD_API = "https://discord.com/api/v10";
 const EMBED_DESC_LIMIT = 4096;
 const MAX_FILES = 10;
@@ -97,6 +99,11 @@ export async function sendToDiscord(
   const url = `${DISCORD_API}/channels/${channelId}/messages`;
   const headers = { Authorization: `Bot ${botToken}` };
 
+  log("info", "discord send", {
+    channelId,
+    attachments: payload.attachments.length,
+  });
+
   // Separate uploadable files from skipped ones
   const uploadable: EmailAttachment[] = [];
   const skipped: string[] = [];
@@ -113,32 +120,38 @@ export async function sendToDiscord(
 
   const embed = buildEmbed(payload, skipped);
 
-  if (uploadable.length === 0) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ embeds: [embed] }),
-    });
-    await handleResponse(res);
-    return;
+  try {
+    if (uploadable.length === 0) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ embeds: [embed] }),
+      });
+      await handleResponse(res, channelId);
+      return;
+    }
+
+    const form = new FormData();
+    form.append("payload_json", JSON.stringify({ embeds: [embed] }));
+
+    for (let i = 0; i < uploadable.length; i++) {
+      const att = uploadable[i];
+      form.append(`files[${i}]`, new Blob([att.content], { type: att.mimeType }), att.filename);
+    }
+
+    const res = await fetch(url, { method: "POST", headers, body: form });
+    await handleResponse(res, channelId);
+  } catch (err) {
+    log("error", "discord send failed", { channelId, error: String(err) });
+    throw err;
   }
-
-  const form = new FormData();
-  form.append("payload_json", JSON.stringify({ embeds: [embed] }));
-
-  for (let i = 0; i < uploadable.length; i++) {
-    const att = uploadable[i];
-    form.append(`files[${i}]`, new Blob([att.content], { type: att.mimeType }), att.filename);
-  }
-
-  const res = await fetch(url, { method: "POST", headers, body: form });
-  await handleResponse(res);
 }
 
 /** Throws on non-2xx responses. Waits and throws on 429 so allSettled captures it. */
-async function handleResponse(res: Response): Promise<void> {
+async function handleResponse(res: Response, channelId: string): Promise<void> {
   if (res.status === 429) {
     const retryAfter = parseFloat(res.headers.get("Retry-After") || "1");
+    log("warn", "discord rate limited", { channelId, retryAfter });
     await new Promise((r) => setTimeout(r, retryAfter * 1000));
     throw new Error(`Discord rate limited, retry after ${retryAfter}s`);
   }
@@ -146,4 +159,5 @@ async function handleResponse(res: Response): Promise<void> {
     const text = await res.text();
     throw new Error(`Discord API ${res.status}: ${text}`);
   }
+  log("info", "discord send ok", { channelId });
 }
