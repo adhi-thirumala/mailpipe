@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "discord-interactions": "^4.1.0",
-    "email-reply-parser": "^2.3.5",
     "postal-mime": "^2.4.1"
   },
   "devDependencies": {

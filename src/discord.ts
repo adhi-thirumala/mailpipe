@@ -2,14 +2,17 @@
  * Sends messages to Discord channels via the Bot REST API.
  */
 
-import EmailReplyParser from "email-reply-parser";
-
 const DISCORD_API = "https://discord.com/api/v10";
 const EMBED_DESC_LIMIT = 4096;
 const MAX_FILES = 10;
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 
-const parser = new EmailReplyParser();
+// Patterns marking the start of a quoted/forwarded section
+const QUOTE_MARKERS = [
+  /^On .+ wrote:\s*$/m,                     // Gmail, Apple Mail
+  /^-{3,}\s*Original Message\s*-{3,}/m,     // Outlook
+  /^From:\s.+\nSent:\s.+\nTo:\s/m,         // Outlook header block
+];
 
 export interface EmailAttachment {
   filename: string;
@@ -25,14 +28,37 @@ export interface EmailPayload {
   attachments: EmailAttachment[];
 }
 
-/** Strips quoted replies from email text and formats as embed description. */
-function buildDescription(text: string | null): string {
-  const reply = text?.trim() ? parser.parseReply(text).trim() : "";
-  const replied = text?.trim() ? parser.parseReplied(text).trim() : "";
+/** Splits email text into latest reply and previous quoted content. */
+function stripReply(text: string): { reply: string; quoted: string | null } {
+  for (const pattern of QUOTE_MARKERS) {
+    const match = pattern.exec(text);
+    if (match) {
+      return {
+        reply: text.slice(0, match.index).trim(),
+        quoted: text.slice(match.index + match[0].length).trim() || null,
+      };
+    }
+  }
+  // Check for > quoted lines
+  const lines = text.split("\n");
+  const qi = lines.findIndex((l) => /^>/.test(l));
+  if (qi > 0) {
+    return {
+      reply: lines.slice(0, qi).join("\n").trim(),
+      quoted: lines.slice(qi).map((l) => l.replace(/^>\s?/, "")).join("\n").trim() || null,
+    };
+  }
+  return { reply: text.trim(), quoted: null };
+}
 
+/** Formats email body as embed description, stripping quoted content. */
+function buildDescription(text: string | null): string {
+  if (!text?.trim()) return "[no text content]";
+
+  const { reply, quoted } = stripReply(text);
   let desc = reply || "[no text content]";
-  if (replied) {
-    desc += "\n\n-- Replying to --\n\n" + replied;
+  if (quoted) {
+    desc += "\n\n-- Replying to --\n\n" + quoted;
   }
   if (desc.length > EMBED_DESC_LIMIT) {
     desc = desc.slice(0, EMBED_DESC_LIMIT - 13) + "\n[truncated]";
