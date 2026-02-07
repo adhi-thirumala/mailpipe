@@ -1,5 +1,9 @@
-  {
-"name": "worker-name",
-"compatibility_date": "2026-02-07",
-"main": "src/index.ts"
+{
+  "name": "mailpipe",
+  "compatibility_date": "2026-02-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/index.ts",
+  "kv_namespaces": [
+    { "binding": "EMAIL_KV", "id": "" }
+  ]
 }
