@@ -8,6 +8,8 @@ const DISCORD_API = "https://discord.com/api/v10";
 const EMBED_DESC_LIMIT = 4096;
 const MAX_FILES = 10;
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+const THREAD_NAME_LIMIT = 100;
+const THREAD_ARCHIVE_MINUTES = 1440;
 
 // Patterns marking the start of a quoted/forwarded section
 const QUOTE_MARKERS = [
@@ -28,6 +30,9 @@ export interface EmailPayload {
   subject: string;
   text: string | null;
   attachments: EmailAttachment[];
+  messageId: string | null;
+  inReplyTo: string | null;
+  references: string | null;
 }
 
 /** Splits email text into latest reply and previous quoted content. */
@@ -90,14 +95,78 @@ function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
   };
 }
 
-/** Posts an email as an embed (with file attachments) to a Discord channel. */
-export async function sendToDiscord(
+function normalizeMessageId(value: string): string {
+  return value.trim().replace(/^<|>$/g, "");
+}
+
+function extractMessageIds(value: string | null | undefined): string[] {
+  if (!value) return [];
+  const matches = value.match(/<[^>]+>/g);
+  const tokens = matches ?? value.split(/\s+/);
+  return tokens
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => token.replace(/^<|>$/g, ""))
+    .filter(Boolean);
+}
+
+function threadKey(channelId: string, messageId: string): string {
+  return `thread:${channelId}:${messageId}`;
+}
+
+async function resolveThreadId(
+  kv: KVNamespace,
   channelId: string,
-  botToken: string,
   payload: EmailPayload,
+): Promise<string | null> {
+  const candidates: string[] = [];
+  candidates.push(...extractMessageIds(payload.inReplyTo));
+  const refs = extractMessageIds(payload.references);
+  candidates.push(...refs.reverse());
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = normalizeMessageId(candidate);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    const threadId = await kv.get(threadKey(channelId, normalized));
+    if (threadId) return threadId;
+  }
+  return null;
+}
+
+async function storeThreadMapping(
+  kv: KVNamespace,
+  channelId: string,
+  messageId: string | null,
+  threadId: string,
 ): Promise<void> {
+  if (!messageId) return;
+  const normalized = normalizeMessageId(messageId);
+  if (!normalized) return;
+  await kv.put(threadKey(channelId, normalized), threadId);
+}
+
+function buildThreadName(subject: string): string {
+  const clean = (subject || "(no subject)").replace(/\s+/g, " ").trim() || "(no subject)";
+  if (clean.length <= THREAD_NAME_LIMIT) return clean;
+  return clean.slice(0, THREAD_NAME_LIMIT - 3).trimEnd() + "...";
+}
+
+type DiscordMessage = {
+  id: string;
+};
+
+type DiscordThread = {
+  id: string;
+};
+
+async function sendMessage(
+  channelId: string,
+  headers: Record<string, string>,
+  payload: EmailPayload,
+): Promise<DiscordMessage> {
   const url = `${DISCORD_API}/channels/${channelId}/messages`;
-  const headers = { Authorization: `Bot ${botToken}` };
 
   log("info", "discord send", {
     channelId,
@@ -119,18 +188,15 @@ export async function sendToDiscord(
   }
 
   const embed = buildEmbed(payload, skipped);
+  let res: Response;
 
-  try {
-    if (uploadable.length === 0) {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ embeds: [embed] }),
-      });
-      await handleResponse(res, channelId);
-      return;
-    }
-
+  if (uploadable.length === 0) {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ embeds: [embed] }),
+    });
+  } else {
     const form = new FormData();
     form.append("payload_json", JSON.stringify({ embeds: [embed] }));
 
@@ -139,8 +205,61 @@ export async function sendToDiscord(
       form.append(`files[${i}]`, new Blob([att.content], { type: att.mimeType }), att.filename);
     }
 
-    const res = await fetch(url, { method: "POST", headers, body: form });
-    await handleResponse(res, channelId);
+    res = await fetch(url, { method: "POST", headers, body: form });
+  }
+
+  const data = await parseDiscordResponse(res, channelId);
+  log("info", "discord send ok", { channelId, messageId: data.id });
+  return data as DiscordMessage;
+}
+
+async function createThread(
+  channelId: string,
+  messageId: string,
+  headers: Record<string, string>,
+  name: string,
+): Promise<DiscordThread> {
+  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/threads`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, auto_archive_duration: THREAD_ARCHIVE_MINUTES }),
+  });
+  const data = await parseDiscordResponse(res, channelId);
+  log("info", "discord thread created", { channelId, threadId: data.id, messageId });
+  return data as DiscordThread;
+}
+
+/** Posts an email as an embed (with file attachments) to a Discord channel or thread. */
+export async function sendToDiscord(
+  channelId: string,
+  botToken: string,
+  payload: EmailPayload,
+  kv: KVNamespace,
+): Promise<void> {
+  const headers = { Authorization: `Bot ${botToken}` };
+
+  let threadId: string | null = null;
+  try {
+    threadId = await resolveThreadId(kv, channelId, payload);
+  } catch (err) {
+    log("warn", "discord thread lookup failed", { channelId, error: String(err) });
+  }
+
+  try {
+    if (threadId) {
+      log("info", "discord thread reply", { channelId, threadId });
+      await sendMessage(threadId, headers, payload);
+      await storeThreadMapping(kv, channelId, payload.messageId, threadId);
+      return;
+    }
+
+    const message = await sendMessage(channelId, headers, payload);
+    if (!payload.messageId) return;
+
+    const threadName = buildThreadName(payload.subject);
+    const thread = await createThread(channelId, message.id, headers, threadName);
+    await storeThreadMapping(kv, channelId, payload.messageId, thread.id);
   } catch (err) {
     log("error", "discord send failed", { channelId, error: String(err) });
     throw err;
@@ -148,7 +267,7 @@ export async function sendToDiscord(
 }
 
 /** Throws on non-2xx responses. Waits and throws on 429 so allSettled captures it. */
-async function handleResponse(res: Response, channelId: string): Promise<void> {
+async function parseDiscordResponse(res: Response, channelId: string): Promise<any> {
   if (res.status === 429) {
     const retryAfter = parseFloat(res.headers.get("Retry-After") || "1");
     log("warn", "discord rate limited", { channelId, retryAfter });
@@ -159,5 +278,5 @@ async function handleResponse(res: Response, channelId: string): Promise<void> {
     const text = await res.text();
     throw new Error(`Discord API ${res.status}: ${text}`);
   }
-  log("info", "discord send ok", { channelId });
+  return res.json();
 }
