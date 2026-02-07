@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # Register /setup and /remove slash commands with Discord.
 # Usage: DISCORD_APP_ID=... DISCORD_BOT_TOKEN=... ./scripts/register-commands.sh
+# Or put them in .env and run ./scripts/register-commands.sh
 
 set -euo pipefail
+
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 
 : "${DISCORD_APP_ID:?Set DISCORD_APP_ID}"
 : "${DISCORD_BOT_TOKEN:?Set DISCORD_BOT_TOKEN}"
