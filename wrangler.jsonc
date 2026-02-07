@@ -3,6 +3,9 @@
   "compatibility_date": "2026-02-07",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
+  "kv_namespaces": [
+    { "binding": "EMAIL_KV", "id": "f0acefa95dfc4640ac499f9df4572ceb" }
+  ],
   "observability": {
     "enabled": false,
     "head_sampling_rate": 1,
