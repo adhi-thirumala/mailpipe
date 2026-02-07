@@ -45,6 +45,9 @@ export default {
       subject: parsed.subject ?? "(no subject)",
       text: parsed.text ?? null,
       attachments,
+      messageId: parsed.messageId ?? null,
+      inReplyTo: parsed.inReplyTo ?? null,
+      references: parsed.references ?? null,
     };
 
     log("info", "email parsed", {
@@ -65,7 +68,7 @@ export default {
       const raw = await env.EMAIL_KV.get(key.name);
       if (!raw) return;
       const { channel_id } = JSON.parse(raw) as { channel_id: string };
-      return sendToDiscord(channel_id, env.DISCORD_BOT_TOKEN, payload);
+      return sendToDiscord(channel_id, env.DISCORD_BOT_TOKEN, payload, env.EMAIL_KV);
     });
 
     ctx.waitUntil(
