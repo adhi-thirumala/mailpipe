@@ -10,6 +10,8 @@ const MAX_FILES = 10;
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 const THREAD_NAME_LIMIT = 100;
 const THREAD_ARCHIVE_MINUTES = 1440;
+const FOLLOW_EMOJI = "📬";
+const FOLLOW_EMOJI_ENCODED = encodeURIComponent(FOLLOW_EMOJI);
 
 // Patterns marking the start of a quoted/forwarded section
 const QUOTE_MARKERS = [
@@ -74,7 +76,7 @@ function buildDescription(text: string | null): string {
 }
 
 /** Constructs the Discord embed object with email metadata and skipped-file notes. */
-function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
+function buildEmbed(payload: EmailPayload, skippedFiles: string[], followers?: string[]): object {
   const footer: string[] = [];
   if (payload.attachments.length > 0) {
     footer.push(`${payload.attachments.length} attachment(s)`);
@@ -83,14 +85,19 @@ function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
     footer.push(skippedFiles.join(", "));
   }
 
+  const fields = [
+    { name: "From", value: payload.from, inline: true },
+    { name: "To", value: payload.to, inline: true },
+  ];
+  if (followers && followers.length > 0) {
+    fields.push({ name: "Followers", value: followers.map((id) => `<@${id}>`).join(" "), inline: false });
+  }
+
   return {
     title: payload.subject || "(no subject)",
     description: buildDescription(payload.text),
     color: 0x0099ff,
-    fields: [
-      { name: "From", value: payload.from, inline: true },
-      { name: "To", value: payload.to, inline: true },
-    ],
+    fields,
     ...(footer.length > 0 && { footer: { text: footer.join(" | ") } }),
   };
 }
@@ -112,6 +119,39 @@ function extractMessageIds(value: string | null | undefined): string[] {
 
 function threadKey(channelId: string, messageId: string): string {
   return `thread:${channelId}:${messageId}`;
+}
+
+function followKey(threadId: string): string {
+  return `follow:${threadId}`;
+}
+
+/** Adds the follow-reaction emoji to a message so users can subscribe. */
+async function addReaction(
+  channelId: string,
+  messageId: string,
+  headers: Record<string, string>,
+): Promise<void> {
+  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${FOLLOW_EMOJI_ENCODED}/@me`;
+  const res = await fetch(url, { method: "PUT", headers });
+  if (!res.ok && res.status !== 429) {
+    log("warn", "discord add reaction failed", { channelId, messageId, status: res.status });
+  }
+}
+
+/** Returns user IDs of non-bot users who reacted with the follow emoji. */
+async function getFollowers(
+  channelId: string,
+  messageId: string,
+  headers: Record<string, string>,
+): Promise<string[]> {
+  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${FOLLOW_EMOJI_ENCODED}?limit=100`;
+  const res = await fetch(url, { method: "GET", headers });
+  if (!res.ok) {
+    log("warn", "discord get reactions failed", { channelId, messageId, status: res.status });
+    return [];
+  }
+  const users: { id: string; bot?: boolean }[] = await res.json();
+  return users.filter((u) => !u.bot).map((u) => u.id);
 }
 
 async function resolveThreadId(
@@ -165,6 +205,7 @@ async function sendMessage(
   channelId: string,
   headers: Record<string, string>,
   payload: EmailPayload,
+  followers?: string[],
 ): Promise<DiscordMessage> {
   const url = `${DISCORD_API}/channels/${channelId}/messages`;
 
@@ -187,18 +228,19 @@ async function sendMessage(
     }
   }
 
-  const embed = buildEmbed(payload, skipped);
+  const embed = buildEmbed(payload, skipped, followers);
+  const messageBody = { embeds: [embed] };
   let res: Response;
 
   if (uploadable.length === 0) {
     res = await fetch(url, {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ embeds: [embed] }),
+      body: JSON.stringify(messageBody),
     });
   } else {
     const form = new FormData();
-    form.append("payload_json", JSON.stringify({ embeds: [embed] }));
+    form.append("payload_json", JSON.stringify(messageBody));
 
     for (let i = 0; i < uploadable.length; i++) {
       const att = uploadable[i];
@@ -249,7 +291,20 @@ export async function sendToDiscord(
   try {
     if (threadId) {
       log("info", "discord thread reply", { channelId, threadId });
-      await sendMessage(threadId, headers, payload);
+
+      // Notify followers who reacted to the original message
+      let followers: string[] | undefined;
+      const followMsgId = await kv.get(followKey(threadId));
+      if (followMsgId) {
+        followers = await getFollowers(channelId, followMsgId, headers);
+        if (followers.length > 0) {
+          log("info", "discord notifying followers", { threadId, count: followers.length });
+        } else {
+          followers = undefined;
+        }
+      }
+
+      await sendMessage(threadId, headers, payload, followers);
       await storeThreadMapping(kv, channelId, payload.messageId, threadId);
       return;
     }
@@ -260,6 +315,12 @@ export async function sendToDiscord(
     const threadName = buildThreadName(payload.subject);
     const thread = await createThread(channelId, message.id, headers, threadName);
     await storeThreadMapping(kv, channelId, payload.messageId, thread.id);
+
+    // Add follow reaction so users can subscribe to this thread
+    await addReaction(channelId, message.id, headers);
+
+    // Store which message to check for follow reactions (expires after 1 week)
+    await kv.put(followKey(thread.id), message.id, { expirationTtl: 7 * 24 * 60 * 60 });
   } catch (err) {
     log("error", "discord send failed", { channelId, error: String(err) });
     throw err;
