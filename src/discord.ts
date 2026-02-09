@@ -76,7 +76,7 @@ function buildDescription(text: string | null): string {
 }
 
 /** Constructs the Discord embed object with email metadata and skipped-file notes. */
-function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
+function buildEmbed(payload: EmailPayload, skippedFiles: string[], followers?: string[]): object {
   const footer: string[] = [];
   if (payload.attachments.length > 0) {
     footer.push(`${payload.attachments.length} attachment(s)`);
@@ -85,14 +85,19 @@ function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
     footer.push(skippedFiles.join(", "));
   }
 
+  const fields = [
+    { name: "From", value: payload.from, inline: true },
+    { name: "To", value: payload.to, inline: true },
+  ];
+  if (followers && followers.length > 0) {
+    fields.push({ name: "Followers", value: followers.map((id) => `<@${id}>`).join(" "), inline: false });
+  }
+
   return {
     title: payload.subject || "(no subject)",
     description: buildDescription(payload.text),
     color: 0x0099ff,
-    fields: [
-      { name: "From", value: payload.from, inline: true },
-      { name: "To", value: payload.to, inline: true },
-    ],
+    fields,
     ...(footer.length > 0 && { footer: { text: footer.join(" | ") } }),
   };
 }
@@ -200,7 +205,7 @@ async function sendMessage(
   channelId: string,
   headers: Record<string, string>,
   payload: EmailPayload,
-  content?: string,
+  followers?: string[],
 ): Promise<DiscordMessage> {
   const url = `${DISCORD_API}/channels/${channelId}/messages`;
 
@@ -223,8 +228,8 @@ async function sendMessage(
     }
   }
 
-  const embed = buildEmbed(payload, skipped);
-  const messageBody = { ...(content && { content }), embeds: [embed] };
+  const embed = buildEmbed(payload, skipped, followers);
+  const messageBody = { embeds: [embed] };
   let res: Response;
 
   if (uploadable.length === 0) {
@@ -288,31 +293,31 @@ export async function sendToDiscord(
       log("info", "discord thread reply", { channelId, threadId });
 
       // Notify followers who reacted to the original message
-      let content: string | undefined;
+      let followers: string[] | undefined;
       const followMsgId = await kv.get(followKey(threadId));
       if (followMsgId) {
-        const followers = await getFollowers(channelId, followMsgId, headers);
+        followers = await getFollowers(channelId, followMsgId, headers);
         if (followers.length > 0) {
-          content = followers.map((id) => `<@${id}>`).join(" ");
           log("info", "discord notifying followers", { threadId, count: followers.length });
+        } else {
+          followers = undefined;
         }
       }
 
-      await sendMessage(threadId, headers, payload, content);
+      await sendMessage(threadId, headers, payload, followers);
       await storeThreadMapping(kv, channelId, payload.messageId, threadId);
       return;
     }
 
     const message = await sendMessage(channelId, headers, payload);
-
-    // Add follow reaction so users can subscribe to this pipe
-    await addReaction(channelId, message.id, headers);
-
     if (!payload.messageId) return;
 
     const threadName = buildThreadName(payload.subject);
     const thread = await createThread(channelId, message.id, headers, threadName);
     await storeThreadMapping(kv, channelId, payload.messageId, thread.id);
+
+    // Add follow reaction so users can subscribe to this thread
+    await addReaction(channelId, message.id, headers);
 
     // Store which message to check for follow reactions
     await kv.put(followKey(thread.id), message.id);
