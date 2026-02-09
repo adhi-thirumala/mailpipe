@@ -319,8 +319,8 @@ export async function sendToDiscord(
     // Add follow reaction so users can subscribe to this thread
     await addReaction(channelId, message.id, headers);
 
-    // Store which message to check for follow reactions
-    await kv.put(followKey(thread.id), message.id);
+    // Store which message to check for follow reactions (expires after 1 week)
+    await kv.put(followKey(thread.id), message.id, { expirationTtl: 7 * 24 * 60 * 60 });
   } catch (err) {
     log("error", "discord send failed", { channelId, error: String(err) });
     throw err;
