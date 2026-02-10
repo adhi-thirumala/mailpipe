@@ -76,7 +76,7 @@ function buildDescription(text: string | null): string {
 }
 
 /** Constructs the Discord embed object with email metadata and skipped-file notes. */
-function buildEmbed(payload: EmailPayload, skippedFiles: string[], followers?: string[]): object {
+function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
   const footer: string[] = [];
   if (payload.attachments.length > 0) {
     footer.push(`${payload.attachments.length} attachment(s)`);
@@ -89,9 +89,6 @@ function buildEmbed(payload: EmailPayload, skippedFiles: string[], followers?: s
     { name: "From", value: payload.from, inline: true },
     { name: "To", value: payload.to, inline: true },
   ];
-  if (followers && followers.length > 0) {
-    fields.push({ name: "Followers", value: followers.map((id) => `<@${id}>`).join(" "), inline: false });
-  }
 
   return {
     title: payload.subject || "(no subject)",
@@ -228,8 +225,12 @@ async function sendMessage(
     }
   }
 
-  const embed = buildEmbed(payload, skipped, followers);
-  const messageBody = { embeds: [embed] };
+  const embed = buildEmbed(payload, skipped);
+  const content =
+    followers && followers.length > 0
+      ? `Subscribers: ${followers.map((id) => `<@${id}>`).join(" ")}`
+      : undefined;
+  const messageBody = { ...(content && { content }), embeds: [embed] };
   let res: Response;
 
   if (uploadable.length === 0) {
