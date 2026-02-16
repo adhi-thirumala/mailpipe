@@ -3,11 +3,12 @@
  */
 
 import { log } from "./logger.js";
+import { paginateFile, type PaginatedFile } from "./paginate.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const EMBED_DESC_LIMIT = 4096;
 const MAX_FILES = 10;
-const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB (free-tier bot limit)
 const THREAD_NAME_LIMIT = 100;
 const THREAD_ARCHIVE_MINUTES = 1440;
 const FOLLOW_EMOJI = "📬";
@@ -198,12 +199,17 @@ type DiscordThread = {
   id: string;
 };
 
+type SendResult = {
+  message: DiscordMessage;
+  oversized: EmailAttachment[];
+};
+
 async function sendMessage(
   channelId: string,
   headers: Record<string, string>,
   payload: EmailPayload,
   followers?: string[],
-): Promise<DiscordMessage> {
+): Promise<SendResult> {
   const url = `${DISCORD_API}/channels/${channelId}/messages`;
 
   log("info", "discord send", {
@@ -211,18 +217,23 @@ async function sendMessage(
     attachments: payload.attachments.length,
   });
 
-  // Separate uploadable files from skipped ones
+  // Separate uploadable files from oversized / skipped ones
   const uploadable: EmailAttachment[] = [];
+  const oversized: EmailAttachment[] = [];
   const skipped: string[] = [];
 
   for (const att of payload.attachments) {
     if (att.content.byteLength > MAX_FILE_SIZE) {
-      skipped.push(`[too large: ${att.filename} (${(att.content.byteLength / 1024 / 1024).toFixed(1)}MB)]`);
+      oversized.push(att);
     } else if (uploadable.length >= MAX_FILES) {
       skipped.push(`[skipped: ${att.filename}]`);
     } else {
       uploadable.push(att);
     }
+  }
+
+  if (oversized.length > 0) {
+    skipped.push(`[${oversized.length} large file(s) will follow as compressed/split uploads]`);
   }
 
   const embed = buildEmbed(payload, skipped);
@@ -253,7 +264,57 @@ async function sendMessage(
 
   const data = await parseDiscordResponse(res, channelId);
   log("info", "discord send ok", { channelId, messageId: data.id });
-  return data as DiscordMessage;
+  return { message: data as DiscordMessage, oversized };
+}
+
+/** Sends a paginated (compressed + split) file to a Discord channel/thread. */
+async function sendChunkedFile(
+  channelId: string,
+  headers: Record<string, string>,
+  paginated: PaginatedFile,
+): Promise<void> {
+  const { chunks, reassemblyInstructions, originalFilename, originalSize, compressedSize } = paginated;
+
+  const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(0);
+  const sizeInfo = `Original: ${(originalSize / 1024 / 1024).toFixed(1)}MB → Compressed: ${(compressedSize / 1024 / 1024).toFixed(1)}MB (${compressionRatio}% reduction)`;
+
+  for (let batchStart = 0; batchStart < chunks.length; batchStart += MAX_FILES) {
+    const batch = chunks.slice(batchStart, batchStart + MAX_FILES);
+    const batchNumber = Math.floor(batchStart / MAX_FILES) + 1;
+    const totalBatches = Math.ceil(chunks.length / MAX_FILES);
+
+    const form = new FormData();
+
+    let msgContent: string;
+    if (batchStart === 0) {
+      msgContent = reassemblyInstructions + "\n" + sizeInfo;
+    } else {
+      msgContent = `**\`${originalFilename}\`** — continued (message ${batchNumber}/${totalBatches})`;
+    }
+
+    form.append("payload_json", JSON.stringify({ content: msgContent }));
+
+    for (let i = 0; i < batch.length; i++) {
+      const chunk = batch[i];
+      form.append(
+        `files[${i}]`,
+        new Blob([chunk.content], { type: chunk.mimeType }),
+        chunk.filename,
+      );
+    }
+
+    const url = `${DISCORD_API}/channels/${channelId}/messages`;
+    const res = await fetch(url, { method: "POST", headers, body: form });
+    await parseDiscordResponse(res, channelId);
+
+    log("info", "discord chunked upload sent", {
+      channelId,
+      file: originalFilename,
+      batch: batchNumber,
+      totalBatches,
+      filesInBatch: batch.length,
+    });
+  }
 }
 
 async function createThread(
@@ -305,17 +366,27 @@ export async function sendToDiscord(
         }
       }
 
-      await sendMessage(threadId, headers, payload, followers);
+      const { oversized } = await sendMessage(threadId, headers, payload, followers);
       await storeThreadMapping(kv, channelId, payload.messageId, threadId);
+
+      for (const att of oversized) {
+        const paginated = await paginateFile(att);
+        await sendChunkedFile(threadId, headers, paginated);
+      }
       return;
     }
 
-    const message = await sendMessage(channelId, headers, payload);
+    const { message, oversized } = await sendMessage(channelId, headers, payload);
     if (!payload.messageId) return;
 
     const threadName = buildThreadName(payload.subject);
     const thread = await createThread(channelId, message.id, headers, threadName);
     await storeThreadMapping(kv, channelId, payload.messageId, thread.id);
+
+    for (const att of oversized) {
+      const paginated = await paginateFile(att);
+      await sendChunkedFile(thread.id, headers, paginated);
+    }
 
     // Add follow reaction so users can subscribe to this thread
     await addReaction(channelId, message.id, headers);
