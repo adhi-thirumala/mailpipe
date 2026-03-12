@@ -2,11 +2,31 @@
  * Main Worker entry: email() + fetch() handlers.
  */
 
-import PostalMime from "postal-mime";
+import PostalMime, { type Address } from "postal-mime";
 import { sendToDiscord, type EmailPayload, type EmailAttachment } from "./discord.js";
 import { handleInteraction } from "./interactions.js";
 import type { Env } from "./types.js";
 import { log } from "./logger.js";
+
+/** Formats an array of postal-mime Address objects into a comma-separated string. */
+export function formatAddresses(addresses: Address[] | undefined): string | null {
+  if (!addresses || addresses.length === 0) return null;
+  return addresses
+    .map((addr) => {
+      if (addr.address) {
+        return addr.name ? `${addr.name} <${addr.address}>` : addr.address;
+      }
+      // Group address
+      if (addr.group) {
+        return addr.group
+          .map((m) => (m.name ? `${m.name} <${m.address}>` : m.address))
+          .join(", ");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(", ") || null;
+}
 
 export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
@@ -41,7 +61,8 @@ export default {
 
     const payload: EmailPayload = {
       from: parsed.from?.address ?? message.from,
-      to: message.to,
+      to: formatAddresses(parsed.to) ?? message.to,
+      cc: formatAddresses(parsed.cc),
       subject: parsed.subject ?? "(no subject)",
       text: parsed.text ?? null,
       attachments,
