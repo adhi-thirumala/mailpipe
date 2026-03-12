@@ -29,6 +29,7 @@ export interface EmailAttachment {
 export interface EmailPayload {
   from: string;
   to: string;
+  cc: string | null;
   subject: string;
   text: string | null;
   attachments: EmailAttachment[];
@@ -85,10 +86,13 @@ function buildEmbed(payload: EmailPayload, skippedFiles: string[]): object {
     footer.push(skippedFiles.join(", "));
   }
 
-  const fields = [
+  const fields: { name: string; value: string; inline: boolean }[] = [
     { name: "From", value: payload.from, inline: true },
     { name: "To", value: payload.to, inline: true },
   ];
+  if (payload.cc) {
+    fields.push({ name: "CC", value: payload.cc, inline: true });
+  }
 
   return {
     title: payload.subject || "(no subject)",
