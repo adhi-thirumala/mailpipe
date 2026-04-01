@@ -11,6 +11,8 @@ const MAX_FILES = 10;
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 const THREAD_NAME_LIMIT = 100;
 const THREAD_ARCHIVE_MINUTES = 1440;
+const FOLLOW_EMOJI = "📬";
+const FOLLOW_EMOJI_ENCODED = encodeURIComponent(FOLLOW_EMOJI);
 
 // Patterns marking the start of a quoted/forwarded section
 const QUOTE_MARKERS = [
@@ -28,6 +30,7 @@ export interface EmailAttachment {
 export interface EmailPayload {
   from: string;
   to: string;
+  cc: string | null;
   subject: string;
   text: string | null;
   attachments: EmailAttachment[];
@@ -121,6 +124,39 @@ function extractMessageIds(value: string | null | undefined): string[] {
 
 function threadKey(channelId: string, messageId: string): string {
   return `thread:${channelId}:${messageId}`;
+}
+
+function followKey(threadId: string): string {
+  return `follow:${threadId}`;
+}
+
+/** Adds the follow-reaction emoji to a message so users can subscribe. */
+async function addReaction(
+  channelId: string,
+  messageId: string,
+  headers: Record<string, string>,
+): Promise<void> {
+  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${FOLLOW_EMOJI_ENCODED}/@me`;
+  const res = await fetch(url, { method: "PUT", headers });
+  if (!res.ok && res.status !== 429) {
+    log("warn", "discord add reaction failed", { channelId, messageId, status: res.status });
+  }
+}
+
+/** Returns user IDs of non-bot users who reacted with the follow emoji. */
+async function getFollowers(
+  channelId: string,
+  messageId: string,
+  headers: Record<string, string>,
+): Promise<string[]> {
+  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${FOLLOW_EMOJI_ENCODED}?limit=100`;
+  const res = await fetch(url, { method: "GET", headers });
+  if (!res.ok) {
+    log("warn", "discord get reactions failed", { channelId, messageId, status: res.status });
+    return [];
+  }
+  const users: { id: string; bot?: boolean }[] = await res.json();
+  return users.filter((u) => !u.bot).map((u) => u.id);
 }
 
 async function resolveThreadId(

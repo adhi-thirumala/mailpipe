@@ -67,7 +67,8 @@ export default {
 
     const payload: EmailPayload = {
       from: parsed.from?.address ?? message.from,
-      to: message.to,
+      to: formatAddresses(parsed.to) ?? message.to,
+      cc: formatAddresses(parsed.cc),
       subject: parsed.subject ?? "(no subject)",
       text: parsed.text ?? null,
       attachments,
