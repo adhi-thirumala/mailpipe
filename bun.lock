@@ -6,6 +6,7 @@
       "name": "mailpipe",
       "dependencies": {
         "discord-hono": "^0.20.3",
+        "email-reply-parser": "^2.3.5",
         "postal-mime": "^2.4.1",
       },
       "devDependencies": {
@@ -161,6 +162,8 @@
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
     "discord-hono": ["discord-hono@0.20.3", "", {}, "sha512-ze/r3GqirT8kKUub7TamtrM/UFLPgEDc2286eKsdlXdeQQ6xvk1fWlDQBeQa0qirk4yj9H3xYx5/AooTROXn4w=="],
+
+    "email-reply-parser": ["email-reply-parser@2.3.5", "", { "peerDependencies": { "re2": "1.22.1" }, "optionalPeers": ["re2"] }, "sha512-0giLt6y7TKHrd+X1jxblFiDqGeeQmXalGLBkqjyBBl9O0gT19r2da2zMqNa1wHs3uoMZVesjNPny8+g0YtI5fw=="],
 
     "error-stack-parser-es": ["error-stack-parser-es@1.0.5", "", {}, "sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA=="],
 
