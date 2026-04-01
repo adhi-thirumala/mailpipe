@@ -19,10 +19,6 @@ const commands = [
 
 declare const process: { env: Record<string, string | undefined> };
 
-const result = await register(
-  commands,
-  process.env.DISCORD_APP_ID,
-  process.env.DISCORD_BOT_TOKEN,
-);
+const result = await register(commands, process.env.DISCORD_APP_ID, process.env.DISCORD_BOT_TOKEN);
 
 console.log("Registered commands:", result);

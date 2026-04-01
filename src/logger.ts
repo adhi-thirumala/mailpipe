@@ -5,7 +5,7 @@ export function log(level: LogLevel, message: string, data?: Record<string, unkn
     ts: new Date().toISOString(),
     level,
     message,
-    ...(data ?? {}),
+    ...data,
   };
 
   const line = JSON.stringify(payload);

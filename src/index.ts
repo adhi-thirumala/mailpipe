@@ -3,10 +3,32 @@
  */
 
 import { DiscordHono } from "discord-hono";
-import PostalMime from "postal-mime";
+import PostalMime, { type Address } from "postal-mime";
 import { sendToDiscord, type EmailPayload, type EmailAttachment } from "./discord.js";
 import type { Env } from "./types.js";
 import { log } from "./logger.js";
+
+/** Formats an array of postal-mime Address objects into a comma-separated string. */
+export function formatAddresses(addresses: Address[] | undefined): string | null {
+  if (!addresses || addresses.length === 0) return null;
+  return (
+    addresses
+      .map((addr) => {
+        if (addr.address) {
+          return addr.name ? `${addr.name} <${addr.address}>` : addr.address;
+        }
+        // Group address
+        if (addr.group) {
+          return addr.group
+            .map((m) => (m.name ? `${m.name} <${m.address}>` : m.address))
+            .join(", ");
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join(", ") || null
+  );
+}
 
 const app = new DiscordHono<{ Bindings: Env }>({
   discordEnv: (env) => ({
@@ -17,18 +39,15 @@ const app = new DiscordHono<{ Bindings: Env }>({
 })
   .command("setup", async (c) => {
     const { guild_id, channel_id } = c.interaction;
-    await c.env.EMAIL_KV.put(
-      `guild:${guild_id}`,
-      JSON.stringify({ channel_id, guild_id }),
-    );
+    await c.env.EMAIL_KV.put(`guild:${guild_id}`, JSON.stringify({ channel_id, guild_id }));
     return c.flags("EPHEMERAL").res(`Done — emails will be posted to <#${channel_id}>.`);
   })
   .command("remove", async (c) => {
     const { guild_id } = c.interaction;
     await c.env.EMAIL_KV.delete(`guild:${guild_id}`);
-    return c.flags("EPHEMERAL").res(
-      "Removed — this server will no longer receive email notifications.",
-    );
+    return c
+      .flags("EPHEMERAL")
+      .res("Removed — this server will no longer receive email notifications.");
   });
 
 export default {

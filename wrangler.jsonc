@@ -3,9 +3,7 @@
   "compatibility_date": "2026-02-07",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
-  "kv_namespaces": [
-    { "binding": "EMAIL_KV", "id": "f0acefa95dfc4640ac499f9df4572ceb" }
-  ],
+  "kv_namespaces": [{ "binding": "EMAIL_KV", "id": "f0acefa95dfc4640ac499f9df4572ceb" }],
   "observability": {
     "enabled": false,
     "head_sampling_rate": 1,
@@ -13,12 +11,12 @@
       "enabled": true,
       "head_sampling_rate": 1,
       "persist": true,
-      "invocation_logs": true
+      "invocation_logs": true,
     },
     "traces": {
       "enabled": false,
       "persist": true,
-      "head_sampling_rate": 1
-    }
-  }
+      "head_sampling_rate": 1,
+    },
+  },
 }

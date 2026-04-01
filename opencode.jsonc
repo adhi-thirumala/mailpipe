@@ -3,7 +3,7 @@
   "mcp": {
     "cloudflare-docs": {
       "type": "remote",
-      "url": "https://docs.mcp.cloudflare.com/mcp"
-    }
-  }
+      "url": "https://docs.mcp.cloudflare.com/mcp",
+    },
+  },
 }

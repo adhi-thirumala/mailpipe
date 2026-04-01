@@ -3,7 +3,15 @@
  * Uses discord-hono's Embed builder and typed REST client.
  */
 
-import { Embed, createRest, $channels$_$messages, $channels$_$messages$_$threads } from "discord-hono";
+import {
+  Embed,
+  createRest,
+  $channels$_$messages,
+  $channels$_$messages$_$threads,
+  $channels$_$messages$_$reactions$_$me,
+  $channels$_$messages$_$reactions$_,
+} from "discord-hono";
+import EmailReplyParser from "email-reply-parser";
 import { log } from "./logger.js";
 
 const EMBED_DESC_LIMIT = 4096;
@@ -13,13 +21,6 @@ const THREAD_NAME_LIMIT = 100;
 const THREAD_ARCHIVE_MINUTES = 1440;
 const FOLLOW_EMOJI = "📬";
 const FOLLOW_EMOJI_ENCODED = encodeURIComponent(FOLLOW_EMOJI);
-
-// Patterns marking the start of a quoted/forwarded section
-const QUOTE_MARKERS = [
-  /^On .+ wrote:\s*$/m, // Gmail, Apple Mail
-  /^-{3,}\s*Original Message\s*-{3,}/m, // Outlook
-  /^From:\s.+\nSent:\s.+\nTo:\s/m, // Outlook header block
-];
 
 export interface EmailAttachment {
   filename: string;
@@ -39,42 +40,13 @@ export interface EmailPayload {
   references: string | null;
 }
 
-/** Splits email text into latest reply and previous quoted content. */
-function stripReply(text: string): { reply: string; quoted: string | null } {
-  for (const pattern of QUOTE_MARKERS) {
-    const match = pattern.exec(text);
-    if (match) {
-      return {
-        reply: text.slice(0, match.index).trim(),
-        quoted: text.slice(match.index + match[0].length).trim() || null,
-      };
-    }
-  }
-  // Check for > quoted lines
-  const lines = text.split("\n");
-  const qi = lines.findIndex((l) => /^>/.test(l));
-  if (qi > 0) {
-    return {
-      reply: lines.slice(0, qi).join("\n").trim(),
-      quoted: lines
-        .slice(qi)
-        .map((l) => l.replace(/^>\s?/, ""))
-        .join("\n")
-        .trim() || null,
-    };
-  }
-  return { reply: text.trim(), quoted: null };
-}
+const replyParser = new EmailReplyParser();
 
 /** Formats email body as embed description, stripping quoted content. */
 function buildDescription(text: string | null): string {
   if (!text?.trim()) return "[no text content]";
 
-  const { reply, quoted } = stripReply(text);
-  let desc = reply || "[no text content]";
-  if (quoted) {
-    desc += "\n\n-- Replying to --\n\n" + quoted;
-  }
+  let desc = replyParser.parseReply(text) || "[no text content]";
   if (desc.length > EMBED_DESC_LIMIT) {
     desc = desc.slice(0, EMBED_DESC_LIMIT - 13) + "\n[truncated]";
   }
@@ -91,14 +63,19 @@ function buildEmbed(payload: EmailPayload, skippedFiles: string[]): Embed {
     footer.push(skippedFiles.join(", "));
   }
 
+  const fields: { name: string; value: string; inline: true }[] = [
+    { name: "From", value: payload.from, inline: true },
+    { name: "To", value: payload.to, inline: true },
+  ];
+  if (payload.cc) {
+    fields.push({ name: "CC", value: payload.cc, inline: true });
+  }
+
   const embed = new Embed()
     .title(payload.subject || "(no subject)")
     .description(buildDescription(payload.text))
     .color(0x0099ff)
-    .fields(
-      { name: "From", value: payload.from, inline: true },
-      { name: "To", value: payload.to, inline: true },
-    );
+    .fields(...fields);
 
   if (footer.length > 0) {
     embed.footer({ text: footer.join(" | ") });
@@ -132,12 +109,15 @@ function followKey(threadId: string): string {
 
 /** Adds the follow-reaction emoji to a message so users can subscribe. */
 async function addReaction(
+  rest: ReturnType<typeof createRest>,
   channelId: string,
   messageId: string,
-  headers: Record<string, string>,
 ): Promise<void> {
-  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${FOLLOW_EMOJI_ENCODED}/@me`;
-  const res = await fetch(url, { method: "PUT", headers });
+  const res = await rest("PUT", $channels$_$messages$_$reactions$_$me, [
+    channelId,
+    messageId,
+    FOLLOW_EMOJI_ENCODED,
+  ]);
   if (!res.ok && res.status !== 429) {
     log("warn", "discord add reaction failed", { channelId, messageId, status: res.status });
   }
@@ -145,17 +125,24 @@ async function addReaction(
 
 /** Returns user IDs of non-bot users who reacted with the follow emoji. */
 async function getFollowers(
+  rest: ReturnType<typeof createRest>,
   channelId: string,
   messageId: string,
-  headers: Record<string, string>,
 ): Promise<string[]> {
-  const url = `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${FOLLOW_EMOJI_ENCODED}?limit=100`;
-  const res = await fetch(url, { method: "GET", headers });
+  const res = await rest("GET", $channels$_$messages$_$reactions$_, [
+    channelId,
+    messageId,
+    FOLLOW_EMOJI_ENCODED,
+    { limit: 100 },
+  ]);
   if (!res.ok) {
     log("warn", "discord get reactions failed", { channelId, messageId, status: res.status });
     return [];
   }
-  const users: { id: string; bot?: boolean }[] = await res.json();
+  const users: { id: string; bot?: boolean }[] = (await res.json()) as {
+    id: string;
+    bot?: boolean;
+  }[];
   return users.filter((u) => !u.bot).map((u) => u.id);
 }
 
@@ -203,6 +190,7 @@ async function sendMessage(
   rest: ReturnType<typeof createRest>,
   channelId: string,
   payload: EmailPayload,
+  followers?: string[],
 ): Promise<string> {
   log("info", "discord send", {
     channelId,
@@ -226,6 +214,10 @@ async function sendMessage(
   }
 
   const embed = buildEmbed(payload, skipped);
+  const content =
+    followers && followers.length > 0
+      ? `Subscribers: ${followers.map((id) => `<@${id}>`).join(" ")}`
+      : undefined;
   const files = uploadable.map((att) => ({
     blob: new Blob([att.content], { type: att.mimeType }),
     name: att.filename,
@@ -235,7 +227,7 @@ async function sendMessage(
     "POST",
     $channels$_$messages,
     [channelId],
-    { embeds: [embed] },
+    { ...(content && { content }), embeds: [embed] },
     files.length > 0 ? files : undefined,
   );
 
@@ -290,7 +282,20 @@ export async function sendToDiscord(
   try {
     if (threadId) {
       log("info", "discord thread reply", { channelId, threadId });
-      await sendMessage(rest, threadId, payload);
+
+      // Notify followers who reacted to the original message
+      let followers: string[] | undefined;
+      const followMsgId = await kv.get(followKey(threadId));
+      if (followMsgId) {
+        followers = await getFollowers(rest, channelId, followMsgId);
+        if (followers.length > 0) {
+          log("info", "discord notifying followers", { threadId, count: followers.length });
+        } else {
+          followers = undefined;
+        }
+      }
+
+      await sendMessage(rest, threadId, payload, followers);
       await storeThreadMapping(kv, channelId, payload.messageId, threadId);
       return;
     }
@@ -301,6 +306,12 @@ export async function sendToDiscord(
     const threadName = buildThreadName(payload.subject);
     const newThreadId = await createThread(rest, channelId, messageId, threadName);
     await storeThreadMapping(kv, channelId, payload.messageId, newThreadId);
+
+    // Add follow reaction so users can subscribe to this thread
+    await addReaction(rest, channelId, messageId);
+
+    // Store which message to check for follow reactions (expires after 1 week)
+    await kv.put(followKey(newThreadId), messageId, { expirationTtl: 7 * 24 * 60 * 60 });
   } catch (err) {
     log("error", "discord send failed", { channelId, error: String(err) });
     throw err;
