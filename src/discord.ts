@@ -11,7 +11,6 @@ import {
   $channels$_$messages$_$reactions$_$me,
   $channels$_$messages$_$reactions$_,
 } from "discord-hono";
-import EmailReplyParser from "email-reply-parser";
 import { log } from "./logger.js";
 
 const EMBED_DESC_LIMIT = 4096;
@@ -21,6 +20,13 @@ const THREAD_NAME_LIMIT = 100;
 const THREAD_ARCHIVE_MINUTES = 1440;
 const FOLLOW_EMOJI = "📬";
 const FOLLOW_EMOJI_ENCODED = encodeURIComponent(FOLLOW_EMOJI);
+
+// Patterns marking the start of a quoted/forwarded section
+const QUOTE_MARKERS = [
+  /^On .+ wrote:\s*$/m, // Gmail, Apple Mail
+  /^-{3,}\s*Original Message\s*-{3,}/m, // Outlook
+  /^From:\s.+\nSent:\s.+\nTo:\s/m, // Outlook header block
+];
 
 export interface EmailAttachment {
   filename: string;
@@ -40,13 +46,41 @@ export interface EmailPayload {
   references: string | null;
 }
 
-const replyParser = new EmailReplyParser();
+/** Splits email text into latest reply and previous quoted content. */
+function stripReply(text: string): { reply: string; quoted: string | null } {
+  for (const pattern of QUOTE_MARKERS) {
+    const match = pattern.exec(text);
+    if (match) {
+      return {
+        reply: text.slice(0, match.index).trim(),
+        quoted: text.slice(match.index + match[0].length).trim() || null,
+      };
+    }
+  }
+  const lines = text.split("\n");
+  const qi = lines.findIndex((l) => /^>/.test(l));
+  if (qi > 0) {
+    return {
+      reply: lines.slice(0, qi).join("\n").trim(),
+      quoted: lines
+        .slice(qi)
+        .map((l) => l.replace(/^>\s?/, ""))
+        .join("\n")
+        .trim() || null,
+    };
+  }
+  return { reply: text.trim(), quoted: null };
+}
 
 /** Formats email body as embed description, stripping quoted content. */
 function buildDescription(text: string | null): string {
   if (!text?.trim()) return "[no text content]";
 
-  let desc = replyParser.parseReply(text) || "[no text content]";
+  const { reply, quoted } = stripReply(text);
+  let desc = reply || "[no text content]";
+  if (quoted) {
+    desc += "\n\n-- Replying to --\n\n" + quoted;
+  }
   if (desc.length > EMBED_DESC_LIMIT) {
     desc = desc.slice(0, EMBED_DESC_LIMIT - 13) + "\n[truncated]";
   }
