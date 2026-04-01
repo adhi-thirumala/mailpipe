@@ -41,5 +41,5 @@ if [ "$json" = "[]" ]; then
   exit 1
 fi
 
-bunx wrangler kv key put --binding EMAIL_KV "forwarding_list" "$json"
+bunx wrangler kv key put --remote --binding EMAIL_KV "forwarding_list" "$json"
 echo "Updated forwarding_list: $json"
