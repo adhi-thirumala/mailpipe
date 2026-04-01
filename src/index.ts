@@ -2,33 +2,38 @@
  * Main Worker entry: email() + fetch() handlers.
  */
 
-import PostalMime, { type Address } from "postal-mime";
+import { DiscordHono } from "discord-hono";
+import PostalMime from "postal-mime";
 import { sendToDiscord, type EmailPayload, type EmailAttachment } from "./discord.js";
-import { handleInteraction } from "./interactions.js";
 import type { Env } from "./types.js";
 import { log } from "./logger.js";
 
-/** Formats an array of postal-mime Address objects into a comma-separated string. */
-export function formatAddresses(addresses: Address[] | undefined): string | null {
-  if (!addresses || addresses.length === 0) return null;
-  return addresses
-    .map((addr) => {
-      if (addr.address) {
-        return addr.name ? `${addr.name} <${addr.address}>` : addr.address;
-      }
-      // Group address
-      if (addr.group) {
-        return addr.group
-          .map((m) => (m.name ? `${m.name} <${m.address}>` : m.address))
-          .join(", ");
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join(", ") || null;
-}
+const app = new DiscordHono<{ Bindings: Env }>({
+  discordEnv: (env) => ({
+    APPLICATION_ID: env.DISCORD_APP_ID,
+    PUBLIC_KEY: env.DISCORD_PUBLIC_KEY,
+    TOKEN: env.DISCORD_BOT_TOKEN,
+  }),
+})
+  .command("setup", async (c) => {
+    const { guild_id, channel_id } = c.interaction;
+    await c.env.EMAIL_KV.put(
+      `guild:${guild_id}`,
+      JSON.stringify({ channel_id, guild_id }),
+    );
+    return c.flags("EPHEMERAL").res(`Done — emails will be posted to <#${channel_id}>.`);
+  })
+  .command("remove", async (c) => {
+    const { guild_id } = c.interaction;
+    await c.env.EMAIL_KV.delete(`guild:${guild_id}`);
+    return c.flags("EPHEMERAL").res(
+      "Removed — this server will no longer receive email notifications.",
+    );
+  });
 
 export default {
+  fetch: app.fetch,
+
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
     log("info", "email received", {
       from: message.from,
@@ -54,9 +59,10 @@ export default {
     const attachments: EmailAttachment[] = (parsed.attachments ?? []).map((att) => ({
       filename: att.filename ?? "attachment",
       mimeType: att.mimeType ?? "application/octet-stream",
-      content: typeof att.content === "string"
-        ? new TextEncoder().encode(att.content)
-        : new Uint8Array(att.content),
+      content:
+        typeof att.content === "string"
+          ? new TextEncoder().encode(att.content)
+          : new Uint8Array(att.content),
     }));
 
     const payload: EmailPayload = {
@@ -98,13 +104,5 @@ export default {
         log("info", "discord notify complete", { total: results.length, failed });
       }),
     );
-  },
-
-  async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === "POST") {
-      return handleInteraction(request, env);
-    }
-    log("info", "health check", { method: request.method, url: request.url });
-    return new Response("mailpipe is running", { status: 200 });
   },
 };
