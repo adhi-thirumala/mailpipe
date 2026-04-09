@@ -5,8 +5,9 @@
 import { DiscordHono } from "discord-hono";
 import PostalMime, { type Address } from "postal-mime";
 import { sendToDiscord, type EmailPayload, type EmailAttachment } from "./discord.js";
-import type { Env } from "./types.js";
+import type { Env, ForwardingEntry } from "./types.js";
 import { log } from "./logger.js";
+import * as EmailValidator from "email-validator";
 
 /** Formats an array of postal-mime Address objects into a comma-separated string. */
 export function formatAddresses(addresses: Address[] | undefined): string | null {
@@ -48,7 +49,89 @@ const app = new DiscordHono<{ Bindings: Env }>({
     return c
       .flags("EPHEMERAL")
       .res("Removed — this server will no longer receive email notifications.");
-  });
+  })
+  .command("forward", async (c) => {
+    const email = (c.var as Record<string, unknown>).email as string;
+    const userId = c.interaction.user?.id;
+
+    if (!EmailValidator.validate(email)) {
+      return c.flags("EPHEMERAL").res(`Invalid email address: \`${email}\``);
+    }
+
+    if (!userId) {
+      return c.flags("EPHEMERAL").res("Error: Could not identify user.");
+    }
+
+    const raw = await c.env.EMAIL_KV.get("forwarding_list");
+    const entries: ForwardingEntry[] = raw ? JSON.parse(raw) : [];
+
+    if (entries.some((entry) => entry.email === email)) {
+      return c.flags("EPHEMERAL").res(`\`${email}\` is already in the forwarding list.`);
+    }
+
+    entries.push({
+      email,
+      userId,
+      addedAt: new Date().toISOString(),
+    });
+    await c.env.EMAIL_KV.put("forwarding_list", JSON.stringify(entries));
+
+    return c.flags("EPHEMERAL").res(`Done — emails will be forwarded to \`${email}\`.`);
+  })
+  .autocomplete(
+    "unforward",
+    // Autocomplete handler - shows emails added by this user
+    async (c) => {
+      const userId = c.interaction.user?.id;
+      const focused = c.focused?.value?.toLowerCase() || "";
+
+      if (!userId) {
+        return c.resAutocomplete({ choices: [] });
+      }
+
+      const raw = await c.env.EMAIL_KV.get("forwarding_list");
+      const entries: ForwardingEntry[] = raw ? JSON.parse(raw) : [];
+
+      // Filter to only show emails added by this user, matching the search
+      const userEmails = entries
+        .filter((entry) => entry.userId === userId)
+        .filter((entry) => entry.email.toLowerCase().includes(focused));
+
+      const choices = userEmails.map((entry) => ({
+        name: entry.email,
+        value: entry.email,
+      }));
+
+      return c.resAutocomplete({ choices });
+    },
+    // Command handler - removes the email
+    async (c) => {
+      const email = (c.var as Record<string, unknown>).email as string;
+      const userId = c.interaction.user?.id;
+
+      if (!userId) {
+        return c.flags("EPHEMERAL").res("Error: Could not identify user.");
+      }
+
+      const raw = await c.env.EMAIL_KV.get("forwarding_list");
+      const entries: ForwardingEntry[] = raw ? JSON.parse(raw) : [];
+
+      const entryIndex = entries.findIndex(
+        (entry) => entry.email === email && entry.userId === userId
+      );
+
+      if (entryIndex === -1) {
+        return c
+          .flags("EPHEMERAL")
+          .res(`\`${email}\` not found in your forwarding list or was added by another user.`);
+      }
+
+      entries.splice(entryIndex, 1);
+      await c.env.EMAIL_KV.put("forwarding_list", JSON.stringify(entries));
+
+      return c.flags("EPHEMERAL").res(`Removed \`${email}\` from the forwarding list.`);
+    }
+  );
 
 export default {
   fetch: app.fetch,
@@ -66,7 +149,8 @@ export default {
     // Forward to all addresses in KV
     const forwardingRaw = await env.EMAIL_KV.get("forwarding_list");
     if (forwardingRaw) {
-      const addresses: string[] = JSON.parse(forwardingRaw);
+      const entries: ForwardingEntry[] = JSON.parse(forwardingRaw);
+      const addresses = entries.map((entry) => entry.email);
       const results = await Promise.allSettled(addresses.map((addr) => message.forward(addr)));
       const failed = results.filter((r) => r.status === "rejected").length;
       log("info", "email forwarded", { targets: addresses.length, failed });

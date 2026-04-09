@@ -6,7 +6,7 @@
 
 // @ts-nocheck — standalone CLI script, not part of the Worker build.
 
-import { Command, register } from "discord-hono";
+import { Command, Option, register } from "discord-hono";
 
 const commands = [
   new Command("setup", "Set this channel to receive email notifications")
@@ -15,6 +15,16 @@ const commands = [
   new Command("remove", "Stop receiving email notifications in this server")
     .contexts(0)
     .default_member_permissions("32"),
+  new Command("forward", "Forward emails from the mailpipe email to this email")
+    .contexts(0)
+    .default_member_permissions("32")
+    .options(new Option("email", "Email address to forward to", "String").required(true)),
+  new Command("unforward", "Remove an email from the forwarding list")
+    .contexts(0)
+    .default_member_permissions("32")
+    .options(
+      new Option("email", "Email address to remove", "String").required(true).autocomplete()
+    ),
 ];
 
 declare const process: { env: Record<string, string | undefined> };

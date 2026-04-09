@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "discord-hono": "^0.20.3",
+    "email-validator": "^2.0.4",
     "postal-mime": "^2.4.1"
   },
   "devDependencies": {
