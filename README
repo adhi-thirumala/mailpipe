@@ -1,0 +1,1 @@
+sends emails into discord - hosting is self explanatory - just make new cloudflare bindings, grab a discord auth token, connect to domain, and go
